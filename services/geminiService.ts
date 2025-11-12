@@ -2,11 +2,15 @@ import { GoogleGenAI, Type, Modality } from "@google/genai";
 import type { ReferenceImage, AspectRatio } from "../types.ts";
 
 const getAi = () => {
-  const apiKey = process.env.API_KEY;
-  if (!apiKey) {
-    throw new Error("API Key is not configured. The app cannot connect to the AI service. Please ensure the API_KEY environment variable is set.");
-  }
-  return new GoogleGenAI({ apiKey });
+    // This relies on the env.js file created by the Netlify build command
+    if (typeof process === 'undefined' || !process.env) {
+        throw new Error("The environment script (env.js) has not loaded. This is needed to configure the API Key.");
+    }
+    const apiKey = process.env.API_KEY;
+    if (!apiKey) {
+        throw new Error("API Key is not configured. Please ensure the API_KEY is set in your Netlify environment variables and the site has been redeployed.");
+    }
+    return new GoogleGenAI({ apiKey });
 };
 
 const promptGenerationModel = "gemini-2.5-flash";
