@@ -1,0 +1,5 @@
+{
+  "name": "Bulk AI Image Generator",
+  "description": "An AI-powered tool to generate a series of images from a script. Provide your content, define an image style, and let the AI create visual prompts and generate corresponding images in bulk.",
+  "requestFramePermissions": []
+}
