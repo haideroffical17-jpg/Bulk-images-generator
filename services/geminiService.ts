@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type, Modality } from "@google/genai";
-import type { ReferenceImage, AspectRatio } from "../types";
+import type { ReferenceImage, AspectRatio } from "../types.ts";
 
 const getAi = () => {
   const apiKey = process.env.API_KEY;

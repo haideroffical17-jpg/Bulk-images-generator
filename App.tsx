@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import { generatePromptsFromScript, generateImageFromPrompt } from './services/geminiService';
-import type { ReferenceImage, AspectRatio } from './types';
+import { generatePromptsFromScript, generateImageFromPrompt } from './services/geminiService.ts';
+import type { ReferenceImage, AspectRatio } from './types.ts';
 
 type ImageJobStatus = 'pending' | 'generating' | 'success' | 'failed';
 
