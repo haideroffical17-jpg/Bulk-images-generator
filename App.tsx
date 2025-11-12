@@ -1,10 +1,19 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { generatePromptsFromScript, generateImageFromPrompt } from './services/geminiService';
-import type { GeneratedImage, ReferenceImage, AspectRatio } from './types';
+import type { ReferenceImage, AspectRatio } from './types';
+
+type ImageJobStatus = 'pending' | 'generating' | 'success' | 'failed';
+
+interface ImageJob {
+  prompt: string;
+  status: ImageJobStatus;
+  src?: string;
+  error?: string;
+}
 
 // SVG Icons defined outside component to prevent re-creation on re-renders
 const SpinnerIcon = () => (
-    <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+    <svg className="animate-spin h-8 w-8 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
     </svg>
@@ -16,13 +25,25 @@ const FileIcon = () => (
     </svg>
 );
 
+const ErrorIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+);
+
+const ClockIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+);
+
+
 const App: React.FC = () => {
     const [script, setScript] = useState<string>('');
     const [styleKeywords, setStyleKeywords] = useState<string>('');
     const [referenceImage, setReferenceImage] = useState<ReferenceImage | null>(null);
     const [aspectRatio, setAspectRatio] = useState<AspectRatio>('1:1');
-    const [prompts, setPrompts] = useState<string[]>([]);
-    const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>([]);
+    const [imageJobs, setImageJobs] = useState<ImageJob[]>([]);
     const [isLoadingPrompts, setIsLoadingPrompts] = useState<boolean>(false);
     const [isLoadingImages, setIsLoadingImages] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
@@ -56,11 +77,10 @@ const App: React.FC = () => {
         }
         setIsLoadingPrompts(true);
         setError(null);
-        setPrompts([]);
-        setGeneratedImages([]);
+        setImageJobs([]);
         try {
             const result = await generatePromptsFromScript(script);
-            setPrompts(result);
+            setImageJobs(result.map(prompt => ({ prompt, status: 'pending' })));
         } catch (err: any) {
             setError(err.message);
         } finally {
@@ -68,41 +88,60 @@ const App: React.FC = () => {
         }
     }, [script]);
 
+    const jobsToProcess = useMemo(() => 
+        imageJobs
+            .map((job, index) => ({...job, originalIndex: index}))
+            .filter(job => job.status === 'pending' || job.status === 'failed'),
+    [imageJobs]);
+
     const handleGenerateImages = useCallback(async () => {
-        if (prompts.length === 0) {
-            setError('Please generate prompts before generating images.');
+        if (jobsToProcess.length === 0) {
+            setError('No images to generate or retry.');
             return;
         }
         setIsLoadingImages(true);
         setError(null);
-        setGeneratedImages([]);
         setImageGenerationProgress(0);
 
-        const newImages: GeneratedImage[] = [];
-        for (let i = 0; i < prompts.length; i++) {
-            const prompt = prompts[i];
+        for (let i = 0; i < jobsToProcess.length; i++) {
+            const { prompt, originalIndex } = jobsToProcess[i];
+            
+            setImageJobs(prevJobs => {
+                const newJobs = [...prevJobs];
+                newJobs[originalIndex] = { ...newJobs[originalIndex], status: 'generating', error: undefined };
+                return newJobs;
+            });
+
             try {
                 const imageUrl = await generateImageFromPrompt(prompt, styleKeywords, referenceImage, aspectRatio);
-                const newImage = { prompt, src: imageUrl };
-                newImages.push(newImage);
-                setGeneratedImages([...newImages]);
+                setImageJobs(prevJobs => {
+                    const newJobs = [...prevJobs];
+                    newJobs[originalIndex] = { ...newJobs[originalIndex], status: 'success', src: imageUrl };
+                    return newJobs;
+                });
             } catch (err: any) {
                 console.error(err.message);
-                // Continue generating other images even if one fails
+                setImageJobs(prevJobs => {
+                    const newJobs = [...prevJobs];
+                    newJobs[originalIndex] = { ...newJobs[originalIndex], status: 'failed', error: err.message };
+                    return newJobs;
+                });
             }
             setImageGenerationProgress(i + 1);
         }
 
         setIsLoadingImages(false);
-    }, [prompts, styleKeywords, referenceImage, aspectRatio]);
+    }, [jobsToProcess, styleKeywords, referenceImage, aspectRatio]);
+
+    const successfulImages = useMemo(() => imageJobs.filter(job => job.status === 'success' && job.src), [imageJobs]);
 
     const handleDownloadAll = useCallback(() => {
-        if (generatedImages.length === 0) return;
+        if (successfulImages.length === 0) return;
         // @ts-ignore - JSZip is loaded from CDN
         const zip = new window.JSZip();
         
-        generatedImages.forEach((image, index) => {
-            const imgData = image.src.split(',')[1];
+        successfulImages.forEach((image, index) => {
+            const imgData = image.src!.split(',')[1];
             // Sanitize prompt to create a valid filename
             const fileName = `${(index + 1).toString().padStart(3, '0')}_${image.prompt.substring(0, 30).replace(/[^a-zA-Z0-9]/g, '_')}.png`;
             zip.file(fileName, imgData, { base64: true });
@@ -117,8 +156,16 @@ const App: React.FC = () => {
             document.body.removeChild(link);
         });
 
-    }, [generatedImages]);
+    }, [successfulImages]);
 
+    const hasFailedJobs = useMemo(() => imageJobs.some(j => j.status === 'failed'), [imageJobs]);
+    const hasPendingJobs = useMemo(() => imageJobs.some(j => j.status === 'pending'), [imageJobs]);
+    
+    const getGenerateButtonText = () => {
+        if (isLoadingImages) return 'Generating Images...';
+        if (hasFailedJobs && !hasPendingJobs) return 'Retry Failed Images';
+        return 'Generate Images';
+    };
 
     return (
         <div className="min-h-screen bg-background p-4 sm:p-6 lg:p-8">
@@ -219,20 +266,22 @@ const App: React.FC = () => {
                     {/* Right Column: Outputs */}
                     <div className="flex flex-col gap-8">
                         <div className="bg-card p-6 rounded-lg border border-border shadow-lg">
-                            <h2 className="text-xl font-semibold mb-2 text-text-main">Generated Prompts ({prompts.length})</h2>
-                            {prompts.length > 0 ? (
+                            <h2 className="text-xl font-semibold mb-2 text-text-main">Generated Prompts ({imageJobs.length})</h2>
+                            {imageJobs.length > 0 ? (
                                 <>
                                     <div className="max-h-60 overflow-y-auto space-y-2 p-3 bg-secondary rounded-md border border-border">
-                                        {prompts.map((p, i) => (
-                                            <p key={i} className="text-sm text-text-secondary border-b border-border/50 pb-1">{i + 1}. {p}</p>
+                                        {imageJobs.map((job, i) => (
+                                            <p key={i} className="text-sm text-text-secondary border-b border-border/50 pb-1">{i + 1}. {job.prompt}</p>
                                         ))}
                                     </div>
                                     <button
                                         onClick={handleGenerateImages}
-                                        disabled={isLoadingImages || prompts.length === 0}
-                                        className="mt-4 w-full bg-green-600 text-white font-bold py-2 px-4 rounded-md hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center justify-center"
+                                        disabled={isLoadingImages || jobsToProcess.length === 0}
+                                        className={`mt-4 w-full text-white font-bold py-2 px-4 rounded-md transition-colors flex items-center justify-center ${
+                                            hasFailedJobs && !hasPendingJobs ? 'bg-yellow-600 hover:bg-yellow-700' : 'bg-green-600 hover:bg-green-700'
+                                        } disabled:bg-gray-600 disabled:cursor-not-allowed`}
                                     >
-                                        {isLoadingImages ? <><SpinnerIcon /> Generating Images...</> : 'Generate Images'}
+                                        {isLoadingImages ? <><SpinnerIcon /> {getGenerateButtonText()}</> : getGenerateButtonText()}
                                     </button>
                                 </>
                             ) : (
@@ -242,38 +291,60 @@ const App: React.FC = () => {
                         
                         <div className="bg-card p-6 rounded-lg border border-border shadow-lg">
                              <div className="flex justify-between items-center mb-4">
-                                <h2 className="text-xl font-semibold text-text-main">Generated Images ({generatedImages.length}/{prompts.length})</h2>
+                                <h2 className="text-xl font-semibold text-text-main">Generated Images ({successfulImages.length}/{imageJobs.length})</h2>
                                 <button
                                     onClick={handleDownloadAll}
-                                    disabled={isLoadingImages || generatedImages.length === 0}
+                                    disabled={isLoadingImages || successfulImages.length === 0}
                                     className="bg-blue-600 text-white font-bold py-2 px-4 rounded-md hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors text-sm"
                                 >
                                     Download All
                                 </button>
                              </div>
                             
-                            {isLoadingImages && (
+                            {isLoadingImages && jobsToProcess.length > 0 && (
                                 <div className="w-full bg-secondary rounded-full h-2.5 mb-4">
-                                    <div className="bg-primary h-2.5 rounded-full" style={{ width: `${(imageGenerationProgress / prompts.length) * 100}%` }}></div>
+                                    <div className="bg-primary h-2.5 rounded-full" style={{ width: `${(imageGenerationProgress / jobsToProcess.length) * 100}%` }}></div>
                                 </div>
                             )}
 
-                             {generatedImages.length > 0 ? (
-                                 <div className="max-h-[600px] overflow-y-auto grid grid-cols-2 sm:grid-cols-3 gap-4">
-                                     {generatedImages.map((image, i) => (
-                                         <div key={i} className="group relative rounded-lg overflow-hidden border-2 border-transparent hover:border-primary transition-all">
-                                             <img src={image.src} alt={image.prompt} className="w-full h-auto object-cover" />
-                                             <div className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 transition-opacity p-2 text-xs text-white overflow-hidden">
-                                                 {image.prompt}
-                                             </div>
-                                         </div>
-                                     ))}
-                                 </div>
-                             ) : (
-                                 <div className="flex items-center justify-center h-40 bg-secondary rounded-lg">
+                            {imageJobs.length > 0 ? (
+                                <div className="max-h-[600px] overflow-y-auto grid grid-cols-2 sm:grid-cols-3 gap-4">
+                                    {imageJobs.map((job, i) => (
+                                        <div key={i} className="group relative rounded-lg overflow-hidden border-2 border-border bg-secondary flex items-center justify-center aspect-square">
+                                            {job.status === 'success' && job.src ? (
+                                                <>
+                                                    <img src={job.src} alt={job.prompt} className="w-full h-full object-cover" />
+                                                    <div className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 transition-opacity p-2 text-xs text-white flex items-center justify-center text-center">
+                                                        {job.prompt}
+                                                    </div>
+                                                </>
+                                            ) : job.status === 'generating' ? (
+                                                <div className="flex flex-col items-center gap-2 text-text-secondary">
+                                                    <SpinnerIcon />
+                                                    <span className="text-xs">Generating...</span>
+                                                </div>
+                                            ) : job.status === 'pending' ? (
+                                                <div className="flex flex-col items-center gap-2 text-text-secondary">
+                                                    <ClockIcon />
+                                                    <span className="text-xs">Pending</span>
+                                                </div>
+                                            ) : job.status === 'failed' ? (
+                                                <div className="border-red-500 border-2 w-full h-full flex flex-col items-center justify-center gap-2 p-2 text-center">
+                                                    <ErrorIcon />
+                                                    <span className="text-sm text-red-400">Failed</span>
+                                                    <div className="absolute inset-0 bg-black/80 opacity-0 group-hover:opacity-100 transition-opacity p-2 text-xs text-white overflow-auto flex items-center justify-center">
+                                                        {job.error}
+                                                    </div>
+                                                </div>
+                                            ) : null}
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="flex items-center justify-center h-40 bg-secondary rounded-lg">
                                     <p className="text-text-secondary italic">Images will appear here.</p>
-                                 </div>
-                             )}
+                                </div>
+                            )}
                         </div>
                     </div>
                 </main>
